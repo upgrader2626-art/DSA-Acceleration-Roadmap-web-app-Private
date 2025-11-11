@@ -1,10 +1,10 @@
-const CACHE_NAME = "dsa-roadmap-cache-v3";
-const OFFLINE_URL = "/offline.html";
+const CACHE_NAME = "dsa-roadmap-cache-v4"; // Increment version to force update
+const OFFLINE_URL = "offline.html";
 
 const APP_SHELL = [
     "/",
     "/index.html",
-    "/offline.html",
+    "offline.html",
     "/icons/icon-192x192.png",
     "/icons/icon-512x512.png",
     "/icons/icon-maskable-192x192.png",
@@ -15,16 +15,15 @@ const APP_SHELL = [
     "/vendor/html2canvas.min.js"
 ];
 
-// ✅ Install - Now with skipWaiting for instant activation
+// Install: Caches the app shell.
 self.addEventListener("install", (event) => {
-    self.skipWaiting();
-
     event.waitUntil(
         caches.open(CACHE_NAME).then((cache) => {
             console.log("SW: Caching app shell");
             return cache.addAll(APP_SHELL);
         })
     );
+    self.skipWaiting(); // Force the waiting service worker to become the active one.
 });
 
 // ✅ Activate - With immediate claim and better cleanup
@@ -48,41 +47,37 @@ self.addEventListener("activate", (event) => {
     );
 });
 
-// ✅ Fetch: Improved stale-while-revalidate + fallbacks
+// Fetch: Stale-while-revalidate for assets, and network-first for navigation.
 self.addEventListener("fetch", (event) => {
-    // Only handle GET requests
-    if (event.request.method !== "GET") return;
+    const { request } = event;
 
-    // Handle navigation (HTML pages)
-    if (event.request.mode === "navigate") {
+    // For navigation requests, try network first, then cache, then offline page.
+    if (request.mode === "navigate") {
         event.respondWith(
-            fetch(event.request).catch(() => caches.match(OFFLINE_URL))
+            (async () => {
+                try {
+                    const networkResponse = await fetch(request);
+                    return networkResponse;
+                } catch (error) {
+                    console.log("SW: Fetch failed; returning offline page instead.", error);
+                    const cache = await caches.open(CACHE_NAME);
+                    return await cache.match(OFFLINE_URL);
+                }
+            })()
         );
         return;
     }
 
-    // Ignore external CDN requests in cache
-    const url = new URL(event.request.url);
-    const isLocal = url.origin === self.location.origin;
-
+    // For other requests (assets), use stale-while-revalidate.
     event.respondWith(
-        caches.open(CACHE_NAME).then(async (cache) => {
-            const cachedResponse = await cache.match(event.request);
-
-            const networkFetch = fetch(event.request)
-                .then((networkResponse) => {
-                    // Only cache successful local responses
-                    if (isLocal && networkResponse.status === 200) {
-                        cache.put(event.request, networkResponse.clone());
-                    }
+        caches.open(CACHE_NAME).then((cache) => {
+            return cache.match(request).then((cachedResponse) => {
+                const networkFetch = fetch(request).then((networkResponse) => {
+                    cache.put(request, networkResponse.clone());
                     return networkResponse;
-                })
-                .catch((error) => {
-                    console.warn("SW: Network fetch failed", error);
-                    return cachedResponse || Promise.reject("No cached response available");
                 });
-
-            return cachedResponse || networkFetch;
+                return cachedResponse || networkFetch;
+            });
         })
     );
 });
